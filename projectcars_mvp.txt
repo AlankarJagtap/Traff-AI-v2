@@ -1,0 +1,152 @@
+# ProjectCars MVP - Complete Setup Guide
+
+## 📁 Project Structure
+
+```
+projectcars-mvp/
+├── backend/
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py
+│   │   ├── database.py
+│   │   ├── models.py
+│   │   ├── schemas.py
+│   │   ├── video_processor.py
+│   │   └── config.py
+│   ├── uploads/
+│   ├── processed/
+│   ├── database.db
+│   ├── requirements.txt
+│   └── .env
+│
+└── frontend/
+    ├── src/
+    │   ├── components/
+    │   ├── pages/
+    │   ├── services/
+    │   ├── App.jsx
+    │   └── main.jsx
+    ├── package.json
+    ├── vite.config.js
+    ├── tailwind.config.js
+    └── .env
+```
+
+## 🚀 Quick Start
+
+### Backend Setup
+
+1. **Create project structure:**
+```bash
+mkdir -p projectcars-mvp/backend/app
+mkdir -p projectcars-mvp/backend/uploads
+mkdir -p projectcars-mvp/backend/processed
+cd projectcars-mvp/backend
+```
+
+2. **Create virtual environment:**
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. **Install dependencies:**
+Create `requirements.txt` and install
+
+4. **Run backend:**
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+### Frontend Setup
+
+1. **Create React app:**
+```bash
+cd projectcars-mvp
+npm create vite@latest frontend -- --template react
+cd frontend
+```
+
+2. **Install dependencies:**
+```bash
+npm install
+npm install -D tailwindcss postcss autoprefixer
+npm install axios react-router-dom react-query
+```
+
+3. **Setup Tailwind:**
+```bash
+npx tailwindcss init -p
+```
+
+4. **Run frontend:**
+```bash
+npm run dev
+```
+
+## 📝 Environment Variables
+
+### Backend `.env`
+```
+DATABASE_URL=sqlite:///./database.db
+UPLOAD_DIR=uploads
+PROCESSED_DIR=processed
+MAX_FILE_SIZE=524288000
+```
+
+### Frontend `.env`
+```
+VITE_API_URL=http://localhost:8000
+```
+
+## 🎯 API Endpoints
+
+- `POST /api/videos/upload` - Upload video
+- `GET /api/videos` - List all videos
+- `GET /api/videos/{id}` - Get video details
+- `POST /api/videos/{id}/process` - Start processing
+- `GET /api/videos/{id}/status` - Get processing status
+- `GET /api/videos/{id}/download` - Download processed video
+- `DELETE /api/videos/{id}` - Delete video
+- `GET /api/analytics/summary` - Get analytics summary
+
+## 📊 Database Schema
+
+```sql
+videos:
+- id (INTEGER PRIMARY KEY)
+- filename (TEXT)
+- original_path (TEXT)
+- processed_path (TEXT)
+- status (TEXT) -- 'uploaded', 'processing', 'completed', 'failed'
+- fps (INTEGER)
+- duration (FLOAT)
+- total_frames (INTEGER)
+- processed_frames (INTEGER)
+- vehicle_count (INTEGER)
+- avg_speed (FLOAT)
+- uploaded_at (DATETIME)
+- processed_at (DATETIME)
+- error_message (TEXT)
+```
+
+## 🎨 Pages
+
+1. **Home** - Dashboard with stats
+2. **Upload** - Upload new video
+3. **Videos** - List of all videos with status
+4. **Video Detail** - View video details and download
+
+## 🔧 Next Steps
+
+After MVP is working:
+1. Add real-time processing updates (WebSocket)
+2. Add calibration UI
+3. Add detailed analytics charts
+4. Add PostgreSQL for production
+5. Add authentication
+6. Add batch processing
+
+## 📚 Code Files
+
+I'll provide all the code files in separate artifacts for easy copy-paste.

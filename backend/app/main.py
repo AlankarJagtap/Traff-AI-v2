@@ -1,0 +1,749 @@
+"""
+FastAPI main application with comprehensive logging
+"""
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+from pathlib import Path
+from datetime import datetime
+import shutil
+import uuid
+import torch
+import logging
+import sys
+
+from .config import settings
+from .database import get_db, init_db
+from .models import Video
+from .schemas import (
+    VideoResponse,
+    VideoStatusResponse,
+    AnalyticsSummary,
+    ProcessingRequest,
+    CalibrationZone,
+    CalibrationResponse,
+    CalibrationRequest
+)
+
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+
+# Create logger
+logger = logging.getLogger("projectcars")
+logger.setLevel(logging.DEBUG)
+
+# Create console handler with formatting
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.DEBUG)
+
+# Create file handler for persistent logs
+file_handler = logging.FileHandler("projectcars.log")
+file_handler.setLevel(logging.INFO)
+
+# Create formatters
+detailed_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+simple_formatter = logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+
+# Set formatters
+console_handler.setFormatter(simple_formatter)
+file_handler.setFormatter(detailed_formatter)
+
+# Add handlers to logger
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
+
+# Log startup
+logger.info("=" * 80)
+logger.info("ProjectCars API Starting...")
+logger.info("=" * 80)
+
+# ============================================================================
+# FASTAPI APP INITIALIZATION
+# ============================================================================
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="ProjectCars API",
+    description="Vehicle Speed Detection API",
+    version="1.0.0"
+)
+
+logger.info("FastAPI app initialized")
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logger.info("CORS middleware configured")
+
+# Add CORS headers for preflight requests
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+# Initialize database on startup
+@app.on_event("startup")
+def startup_event():
+    """Initialize database tables"""
+    logger.info("Startup event triggered")
+    try:
+        init_db()
+        logger.info("Database initialized successfully")
+        
+        # Check CUDA availability
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            cuda_device = torch.cuda.get_device_name(0)
+            logger.info(f"CUDA is available - Using GPU: {cuda_device}")
+        else:
+            logger.warning("CUDA not available - Using CPU (processing will be slower)")
+        
+        # Verify directories exist
+        upload_dir = Path(settings.UPLOAD_DIR)
+        processed_dir = Path(settings.PROCESSED_DIR)
+        
+        if not upload_dir.exists():
+            logger.warning(f"Upload directory not found, creating: {upload_dir}")
+            upload_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            logger.info(f"Upload directory exists: {upload_dir}")
+            
+        if not processed_dir.exists():
+            logger.warning(f"Processed directory not found, creating: {processed_dir}")
+            processed_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            logger.info(f"Processed directory exists: {processed_dir}")
+        
+        logger.info("Startup complete - API is ready")
+        logger.info("Available routes:")
+        for route in app.routes:
+            logger.info(f"  {route.methods} {route.path}")
+        
+    except Exception as e:
+        logger.error(f"Startup failed: {str(e)}", exc_info=True)
+        raise
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Cleanup on shutdown"""
+    logger.info("Shutting down ProjectCars API")
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def save_upload_file(upload_file: UploadFile) -> str:
+    """Save uploaded file and return path"""
+    logger.debug(f"Saving uploaded file: {upload_file.filename}")
+    
+    try:
+        # Generate unique filename
+        file_ext = Path(upload_file.filename).suffix
+        unique_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = Path(settings.UPLOAD_DIR) / unique_filename
+        
+        logger.debug(f"Generated unique filename: {unique_filename}")
+        
+        # Save file
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(upload_file.file, buffer)
+        
+        file_size = file_path.stat().st_size
+        logger.info(f"File saved successfully: {file_path} (size: {file_size / 1024 / 1024:.2f} MB)")
+        
+        return str(file_path)
+        
+    except Exception as e:
+        logger.error(f"Failed to save file {upload_file.filename}: {str(e)}", exc_info=True)
+        raise
+
+
+def get_video_info(file_path: str) -> dict:
+    """Extract video metadata"""
+    logger.debug(f"Extracting video info from: {file_path}")
+    
+    try:
+        import cv2
+        
+        cap = cv2.VideoCapture(file_path)
+        
+        if not cap.isOpened():
+            logger.error(f"Failed to open video file: {file_path}")
+            raise ValueError("Cannot open video file")
+        
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps if fps > 0 else 0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        cap.release()
+        
+        info = {
+            "fps": fps,
+            "total_frames": total_frames,
+            "duration": duration
+        }
+        
+        logger.info(f"Video info extracted: {width}x{height}, {fps} FPS, {total_frames} frames, {duration:.2f}s")
+        
+        return info
+        
+    except Exception as e:
+        logger.error(f"Failed to extract video info from {file_path}: {str(e)}", exc_info=True)
+        raise
+
+
+
+def process_video_task(video_id: int, db: Session, config: ProcessingRequest):
+    """Background task for video processing with zone-based speed estimation"""
+    logger.info(f"Starting background processing task for video ID: {video_id}")
+    
+    video = db.query(Video).filter(Video.id == video_id).first()
+    
+    if not video:
+        logger.error(f"Video not found in database: ID {video_id}")
+        return
+    
+    logger.info(f"Processing video: {video.filename} (ID: {video_id})")
+    
+    try:
+        # Update status
+        video.status = "processing"
+        db.commit()
+        logger.info(f"Video status updated to 'processing' for ID: {video_id}")
+        
+        # Prepare output path
+        output_filename = f"processed_{Path(video.filename).stem}.mp4"
+        output_path = Path(settings.PROCESSED_DIR) / output_filename
+        
+        logger.debug(f"Output path: {output_path}")
+        
+        # Lazy import to avoid heavy deps at startup
+        logger.debug("Importing VideoProcessor...")
+        from .video_processor import VideoProcessor
+        
+        logger.debug("Initializing VideoProcessor...")
+        processor = VideoProcessor(
+            confidence_threshold=config.confidence_threshold,
+            iou_threshold=config.iou_threshold
+        )
+        
+        logger.info("VideoProcessor initialized, starting processing...")
+        
+        # Progress callback
+        def update_progress(current: int, total: int):
+            video.processed_frames = current
+            db.commit()
+        
+        # Process video with calibration data
+        stats = processor.process_video(
+            input_path=video.original_path,
+            output_path=str(output_path),
+            calibration_data=video.calibration_data,  # ← Pass calibration data
+            progress_callback=update_progress
+        )
+        
+        logger.info(f"Video processing completed for ID: {video_id}")
+        logger.info(f"Processing stats: {stats}")
+        
+        # Update video record
+        video.status = "completed"
+        video.processed_path = str(output_path)
+        video.vehicle_count = stats["vehicle_count"]
+        video.avg_speed = float(stats["avg_speed"]) if stats["avg_speed"] is not None else None
+        video.max_speed = float(stats["max_speed"]) if stats.get("max_speed") is not None else None
+        video.min_speed = float(stats["min_speed"]) if stats.get("min_speed") is not None else None
+        video.processed_at = datetime.utcnow()
+        video.error_message = None
+
+        db.commit()
+
+        # Format avg_speed for logging
+        avg_speed_text = f"{video.avg_speed:.1f}" if video.avg_speed else "N/A"
+        logger.info(f"Video record updated: {video.vehicle_count} vehicles detected, avg speed: {avg_speed_text} km/h")
+        logger.info(f"Successfully completed processing for video ID: {video_id}")
+    except Exception as e:
+        # Handle errors
+        error_msg = str(e)
+        logger.error(f"Processing failed for video ID {video_id}: {error_msg}", exc_info=True)
+        
+        video.status = "failed"
+        video.error_message = error_msg
+        db.commit()
+        
+        logger.error(f"Video status set to 'failed' for ID: {video_id}")
+
+
+# ============================================================================
+# API ROUTES
+# ============================================================================
+
+@app.get("/")
+def root():
+    """API root endpoint"""
+    logger.debug("Root endpoint accessed")
+    return {
+        "message": "ProjectCars API",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
+
+
+@app.post("/api/videos/upload", response_model=VideoResponse)
+async def upload_video(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload a new video"""
+    logger.info(f"Upload request received: {file.filename} ({file.content_type})")
+    
+    try:
+        # Validate file extension
+        file_ext = Path(file.filename).suffix.lower()
+        
+        if file_ext not in settings.ALLOWED_EXTENSIONS:
+            logger.warning(f"Invalid file extension: {file_ext}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {settings.ALLOWED_EXTENSIONS}"
+            )
+        
+        logger.debug(f"File extension validated: {file_ext}")
+        
+        # Save file
+        file_path = save_upload_file(file)
+        
+        # Get video info
+        video_info = get_video_info(file_path)
+        
+        # Create database record
+        video = Video(
+            filename=file.filename,
+            original_path=file_path,
+            fps=video_info["fps"],
+            duration=video_info["duration"],
+            total_frames=video_info["total_frames"],
+            status="uploaded"
+        )
+        
+        db.add(video)
+        db.commit()
+        db.refresh(video)
+        
+        logger.info(f"Video uploaded successfully: ID {video.id}, {file.filename}")
+        
+        return video.to_dict()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload failed for {file.filename}: {str(e)}", exc_info=True)
+        
+        # Try to clean up file if it was saved
+        try:
+            if 'file_path' in locals():
+                Path(file_path).unlink(missing_ok=True)
+                logger.debug(f"Cleaned up file: {file_path}")
+        except:
+            pass
+            
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.get("/api/videos", response_model=list[VideoResponse])
+def list_videos(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Get list of all videos"""
+    logger.debug(f"List videos request: skip={skip}, limit={limit}")
+    
+    try:
+        videos = db.query(Video).offset(skip).limit(limit).all()
+        logger.info(f"Retrieved {len(videos)} videos")
+        return [video.to_dict() for video in videos]
+        
+    except Exception as e:
+        logger.error(f"Failed to list videos: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve videos")
+
+
+@app.get("/api/videos/{video_id}", response_model=VideoResponse)
+def get_video(video_id: int, db: Session = Depends(get_db)):
+    """Get video details by ID"""
+    logger.debug(f"Get video request: ID {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.warning(f"Video not found: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        logger.debug(f"Video retrieved: {video.filename} (status: {video.status})")
+        return video.to_dict()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve video")
+
+
+@app.post("/api/videos/{video_id}/process", response_model=VideoStatusResponse)
+async def start_processing(
+    video_id: int,
+    config: ProcessingRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Start video processing"""
+    logger.info(f"Process request received for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.warning(f"Video not found for processing: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        if video.status == "processing":
+            logger.warning(f"Video already processing: ID {video_id}")
+            raise HTTPException(status_code=400, detail="Video is already being processed")
+        
+        if video.status == "completed":
+            logger.warning(f"Video already completed: ID {video_id}")
+            raise HTTPException(status_code=400, detail="Video already processed")
+        
+        logger.info(f"Adding processing task to background tasks for video ID: {video_id}")
+        
+        # Add background task
+        background_tasks.add_task(process_video_task, video_id, db, config)
+        
+        # Update status immediately
+        video.status = "processing"
+        db.commit()
+        
+        logger.info(f"Video processing started: ID {video_id}")
+        
+        return {
+            "id": video.id,
+            "status": video.status,
+            "progress": 0,
+            "processed_frames": 0,
+            "total_frames": video.total_frames,
+            "error_message": None,
+            "device": "cuda" if torch.cuda.is_available() else "cpu"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start processing for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to start processing")
+
+
+@app.get("/api/videos/{video_id}/status", response_model=VideoStatusResponse)
+def get_processing_status(video_id: int, db: Session = Depends(get_db)):
+    """Get video processing status"""
+    logger.debug(f"Status request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.warning(f"Video not found for status check: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        return {
+            "id": video.id,
+            "status": video.status,
+            "progress": video._calculate_progress(),
+            "processed_frames": video.processed_frames,
+            "total_frames": video.total_frames,
+            "error_message": video.error_message,
+            "device": "cuda" if torch.cuda.is_available() else "cpu"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get status for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve status")
+
+
+@app.get("/api/videos/{video_id}/download")
+def download_video(video_id: int, db: Session = Depends(get_db)):
+    """Download processed video"""
+    logger.info(f"Download request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.warning(f"Video not found for download: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        if video.status != "completed":
+            logger.warning(f"Video not completed for download: ID {video_id} (status: {video.status})")
+            raise HTTPException(status_code=400, detail="Video processing not completed")
+        
+        if not video.processed_path or not Path(video.processed_path).exists():
+            logger.error(f"Processed file not found: {video.processed_path}")
+            raise HTTPException(status_code=404, detail="Processed video file not found")
+        
+        logger.info(f"Serving download for video ID {video_id}: {video.processed_path}")
+        
+        return FileResponse(
+            path=video.processed_path,
+            media_type="video/mp4",
+            filename=f"processed_{video.filename}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to download video")
+
+
+@app.delete("/api/videos/{video_id}")
+def delete_video(video_id: int, db: Session = Depends(get_db)):
+    """Delete video and associated files"""
+    logger.info(f"Delete request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.warning(f"Video not found for deletion: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        filename = video.filename
+        
+        # Delete files
+        if video.original_path:
+            try:
+                Path(video.original_path).unlink(missing_ok=True)
+                logger.debug(f"Deleted original file: {video.original_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete original file: {str(e)}")
+                
+        if video.processed_path:
+            try:
+                Path(video.processed_path).unlink(missing_ok=True)
+                logger.debug(f"Deleted processed file: {video.processed_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete processed file: {str(e)}")
+        
+        # Delete database record
+        db.delete(video)
+        db.commit()
+        
+        logger.info(f"Video deleted successfully: ID {video_id}, {filename}")
+        
+        return {"message": "Video deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete video")
+
+
+@app.get("/api/analytics/summary", response_model=AnalyticsSummary)
+def get_analytics_summary(db: Session = Depends(get_db)):
+    """Get analytics summary"""
+    logger.debug("Analytics summary requested")
+    
+    try:
+        total_videos = db.query(Video).count()
+        processing_videos = db.query(Video).filter(Video.status == "processing").count()
+        completed_videos = db.query(Video).filter(Video.status == "completed").count()
+        failed_videos = db.query(Video).filter(Video.status == "failed").count()
+        
+        # Total vehicles detected
+        result = db.query(Video).filter(Video.vehicle_count.isnot(None)).all()
+        total_vehicles = sum(v.vehicle_count for v in result)
+        
+        # Average processing time
+        completed = db.query(Video).filter(
+            Video.status == "completed",
+            Video.uploaded_at.isnot(None),
+            Video.processed_at.isnot(None)
+        ).all()
+        
+        if completed:
+            processing_times = [
+                (v.processed_at - v.uploaded_at).total_seconds()
+                for v in completed
+            ]
+            avg_processing_time = sum(processing_times) / len(processing_times)
+        else:
+            avg_processing_time = None
+        
+        logger.info(f"Analytics: {total_videos} total, {completed_videos} completed, {total_vehicles} vehicles detected")
+        
+        return {
+            "total_videos": total_videos,
+            "processing_videos": processing_videos,
+            "completed_videos": completed_videos,
+            "failed_videos": failed_videos,
+            "total_vehicles_detected": total_vehicles,
+            "avg_processing_time": avg_processing_time
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get analytics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve analytics")
+
+# ADD THESE NEW ENDPOINTS TO YOUR EXISTING main.py
+# Place them after your existing endpoints, before the health check
+
+@app.post("/api/videos/{video_id}/calibrate", response_model=CalibrationResponse)
+async def calibrate_video(
+    video_id: int,
+    calibration_request: CalibrationRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Calibrate video for accurate speed estimation
+    User provides zones with reference points and real-world distances
+    """
+    logger.info(f"Calibration request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.warning(f"Video not found for calibration: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        # Import speed estimator
+        from .speed_estimator import ZonedSpeedEstimator
+        
+        # Create estimator
+        estimator = ZonedSpeedEstimator()
+        
+        # Add each zone
+        for zone_data in calibration_request.zones:
+            estimator.add_zone(
+                name=zone_data.name,
+                y_min=zone_data.y_min,
+                y_max=zone_data.y_max,
+                reference_point1=zone_data.reference_point1,
+                reference_point2=zone_data.reference_point2,
+                real_distance=zone_data.real_distance
+            )
+            logger.info(f"Added zone '{zone_data.name}': y={zone_data.y_min}-{zone_data.y_max}, distance={zone_data.real_distance}m")
+        
+        # Get calibration data
+        calibration_data = estimator.get_calibration_data()
+        
+        # Save to database
+        video.calibration_data = calibration_data
+        video.calibrated_at = datetime.utcnow()
+        db.commit()
+        
+        logger.info(f"Video {video_id} calibrated successfully with {len(calibration_request.zones)} zones")
+        
+        return {
+            "video_id": video_id,
+            "calibration_data": calibration_data,
+            "message": f"Video calibrated successfully with {len(calibration_request.zones)} zone(s)"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Calibration failed for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Calibration failed: {str(e)}")
+
+
+@app.get("/api/videos/{video_id}/calibration")
+async def get_calibration(
+    video_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get calibration data for a video"""
+    logger.debug(f"Get calibration request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        return {
+            "video_id": video_id,
+            "calibration_data": video.calibration_data,
+            "is_calibrated": video.calibration_data is not None and video.calibration_data.get("calibrated", False),
+            "calibrated_at": video.calibrated_at.isoformat() if video.calibrated_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get calibration for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve calibration")
+
+
+@app.delete("/api/videos/{video_id}/calibration")
+async def delete_calibration(
+    video_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete calibration data for a video"""
+    logger.info(f"Delete calibration request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        video.calibration_data = None
+        video.calibrated_at = None
+        db.commit()
+        
+        logger.info(f"Calibration deleted for video ID: {video_id}")
+        
+        return {"message": "Calibration deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete calibration for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete calibration")
+
+
+@app.get("/api/health")
+def health_check():
+    """Health check endpoint"""
+    logger.debug("Health check requested")
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "cuda_available": torch.cuda.is_available()
+    }

@@ -1,0 +1,26 @@
+# Core Dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.12.1
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Video Processing
+opencv-python-headless==4.8.1.78
+ultralytics==8.0.220
+supervision==0.26.0
+torch>=2.0.0
+numpy==1.24.3
+pandas==2.0.0
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+aiofiles==23.2.1
