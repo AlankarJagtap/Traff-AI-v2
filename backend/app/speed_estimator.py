@@ -2,6 +2,7 @@
 Zone-Based Speed Estimation with Perspective Correction
 """
 import numpy as np
+import cv2
 import logging
 
 logger = logging.getLogger("projectcars")
@@ -277,3 +278,85 @@ class SimpleFallbackEstimator:
         speed_kmh = speed_ms * 3.6
         
         return speed_kmh
+
+
+class FourPointSpeedEstimator:
+    def __init__(self, calibration_data=None):
+        self.is_calibrated = False
+        self.transform_matrix = None
+        self.speed_scale_factor = 1.0
+        if calibration_data:
+            self._load_calibration(calibration_data)
+
+    def _load_calibration(self, calibration_data):
+        try:
+            points = np.array(calibration_data.get("points", []), dtype=np.float32)
+            if points.shape != (4, 2):
+                logger.warning("FourPointSpeedEstimator: invalid points shape, expected (4,2)")
+                return
+
+            reference_distance = float(calibration_data.get("reference_distance", 0.0))
+            if reference_distance <= 0:
+                logger.warning("FourPointSpeedEstimator: invalid reference_distance")
+                return
+
+            target_width = int(calibration_data.get("target_width", 25))
+            # Ensure a positive height; fallback to reference_distance * 10 if missing
+            default_height = int(reference_distance * 10) if reference_distance > 0 else 250
+            target_height = int(calibration_data.get("target_height", default_height))
+            if target_height <= 0:
+                target_height = default_height
+
+            target = np.array(
+                [
+                    [0, 0],
+                    [target_width - 1, 0],
+                    [target_width - 1, target_height - 1],
+                    [0, target_height - 1],
+                ],
+                dtype=np.float32,
+            )
+
+            self.transform_matrix = cv2.getPerspectiveTransform(points, target)
+            self.speed_scale_factor = reference_distance / float(target_height)
+            self.is_calibrated = True
+            logger.info(
+                "FourPointSpeedEstimator initialized: reference_distance=%.2f, target_width=%d, target_height=%d",
+                reference_distance,
+                target_width,
+                target_height,
+            )
+        except Exception as e:
+            logger.error("FourPointSpeedEstimator calibration load failed: %s", str(e))
+            self.is_calibrated = False
+            self.transform_matrix = None
+
+    def estimate_speed(self, trajectory_points, fps):
+        if not self.is_calibrated or self.transform_matrix is None:
+            return None
+        if not trajectory_points or len(trajectory_points) < 2:
+            return None
+        if fps <= 0:
+            return None
+
+        try:
+            pts = np.array(trajectory_points, dtype=np.float32)
+            pts = pts.reshape(-1, 1, 2)
+            transformed = cv2.perspectiveTransform(pts, self.transform_matrix)
+            transformed = transformed.reshape(-1, 2)
+
+            start_y = float(transformed[0, 1])
+            end_y = float(transformed[-1, 1])
+            distance_pixels = abs(end_y - start_y)
+
+            distance_meters = distance_pixels * self.speed_scale_factor
+            time_seconds = len(trajectory_points) / float(fps)
+            if time_seconds <= 0:
+                return None
+
+            speed_ms = distance_meters / time_seconds
+            speed_kmh = speed_ms * 3.6
+            return speed_kmh
+        except Exception as e:
+            logger.error("FourPointSpeedEstimator speed estimation failed: %s", str(e))
+            return None

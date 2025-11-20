@@ -8,7 +8,7 @@ from ultralytics import YOLO
 import supervision as sv
 from pathlib import Path
 from .config import settings
-from .speed_estimator import ZonedSpeedEstimator, SimpleFallbackEstimator
+from .speed_estimator import ZonedSpeedEstimator, SimpleFallbackEstimator, FourPointSpeedEstimator
 import logging
 
 logger = logging.getLogger("projectcars")
@@ -58,6 +58,23 @@ class VideoProcessor:
         video_info = sv.VideoInfo.from_video_path(video_path=input_path)
         logger.info(f"Processing video: {video_info.width}x{video_info.height}, {video_info.fps} FPS, {video_info.total_frames} frames")
         
+        # Optional polygon zone for 4-point calibration (limit speeds to calibrated area)
+        polygon_zone = None
+        if enable_speed_calculation and calibration_data and calibration_data.get("mode") == "four_point":
+            try:
+                polygon_points = np.array(calibration_data.get("points", []), dtype=np.int32)
+                if polygon_points.shape == (4, 2):
+                    polygon_zone = sv.PolygonZone(polygon=polygon_points)
+                    logger.info("Polygon zone created from 4-point calibration")
+                else:
+                    logger.warning(
+                        "4-point calibration has invalid polygon shape: %s",
+                        getattr(polygon_points, "shape", None),
+                    )
+            except Exception as e:
+                logger.warning("Failed to create polygon zone from 4-point calibration: %s", str(e))
+                polygon_zone = None
+
         # Initialize tracker
         byte_track = sv.ByteTrack(
             frame_rate=video_info.fps,
@@ -88,13 +105,21 @@ class VideoProcessor:
         if enable_speed_calculation:
             if calibration_data and calibration_data.get("calibrated"):
                 mode = calibration_data.get("mode")
-                # New 4-point calibration is currently treated as global-scale fallback
+
+                # New 4-point homography-based calibration
                 if mode == "four_point" and not calibration_data.get("zones"):
-                    logger.info("4-point calibration detected - using fallback speed estimator for now")
-                    speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
-                else:
+                    logger.info("Using 4-point homography-based speed estimation")
+                    speed_estimator = FourPointSpeedEstimator(calibration_data)
+
+                # Legacy zone-based calibration
+                elif calibration_data.get("zones"):
                     logger.info("Using zone-based speed estimation with calibration")
                     speed_estimator = ZonedSpeedEstimator(calibration_data)
+
+                # Calibrated flag set but no usable data
+                else:
+                    logger.warning("Calibrated flag set but no 4-point or zone data - falling back to simple estimator")
+                    speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
             else:
                 logger.warning("No calibration data - using fallback estimator")
                 speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
@@ -123,7 +148,15 @@ class VideoProcessor:
                 
                 # Filter by confidence
                 detections = detections[detections.confidence > self.confidence_threshold]
-                
+
+                # If we have a calibrated polygon zone (4-point), restrict detections to that area
+                if polygon_zone is not None and len(detections) > 0:
+                    try:
+                        zone_mask = polygon_zone.trigger(detections)
+                        detections = detections[zone_mask]
+                    except Exception as e:
+                        logger.warning("Polygon zone filtering failed: %s", str(e))
+
                 # Apply NMS
                 detections = detections.with_nms(threshold=self.iou_threshold)
                 

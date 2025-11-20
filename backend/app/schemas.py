@@ -78,6 +78,8 @@ class CalibrationRequest(BaseModel):
     points: List[List[float]]
     # Known real-world distance in meters between vertical extent of the selected region
     reference_distance: float
+    # If True, the user marked this distance as approximate (a tuning knob), not an exact measurement
+    approximate: bool = False
 
 
 class CalibrationResponse(BaseModel):

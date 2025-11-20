@@ -643,14 +643,23 @@ async def calibrate_video(
 
         points = calibration_request.points or []
         reference_distance = calibration_request.reference_distance
+        approximate = getattr(calibration_request, "approximate", False)
 
         if len(points) != 4:
             logger.warning(f"Invalid calibration points for video {video_id}: expected 4, got {len(points)}")
             raise HTTPException(status_code=400, detail="Exactly 4 calibration points are required")
 
         if reference_distance <= 0:
-            logger.warning(f"Invalid reference distance for video {video_id}: {reference_distance}")
-            raise HTTPException(status_code=400, detail="Reference distance must be positive")
+            if approximate:
+                # Use a sensible default for approximate mode instead of failing
+                logger.warning(
+                    f"Approximate calibration with non-positive reference distance for video {video_id}: "
+                    f"{reference_distance} - defaulting to 150.0m"
+                )
+                reference_distance = 150.0
+            else:
+                logger.warning(f"Invalid reference distance for video {video_id}: {reference_distance}")
+                raise HTTPException(status_code=400, detail="Reference distance must be positive")
 
         # Prepare calibration payload for storage
         target_width = 25
@@ -663,6 +672,9 @@ async def calibrate_video(
             "target_width": target_width,
             "target_height": target_height,
             "calibrated": True,
+            # Metadata for UI/analytics: whether distance is exact or approximate
+            "approximate": approximate,
+            "distance_mode": "approximate" if approximate else "accurate",
         }
 
         video.calibration_data = calibration_data
@@ -671,7 +683,8 @@ async def calibrate_video(
 
         logger.info(
             f"Video {video_id} calibrated successfully with 4-point perspective; "
-            f"reference_distance={reference_distance}m"
+            f"reference_distance={reference_distance}m, "
+            f"approximate={approximate}"
         )
 
         return {
