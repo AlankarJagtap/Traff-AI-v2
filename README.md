@@ -16,8 +16,27 @@ A modern vehicle detection and analysis system using computer vision and deep le
 - Node.js 16+ (for frontend)
 - pip (Python package manager)
 - npm (Node.js package manager)
+- CUDA-compatible GPU (recommended for better performance)
 
 ## Installation
+
+### Using Docker (Recommended)
+
+```bash
+# Build and start all services
+docker-compose up --build
+
+# Or start in detached mode
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+### Manual Installation
 
 1. Clone the repository:
    ```bash
@@ -51,13 +70,37 @@ A modern vehicle detection and analysis system using computer vision and deep le
    SECRET_KEY=your-secret-key
    DATABASE_URL=sqlite:///./database.db
    
-   # Frontend (if needed)
+   # Frontend
    VITE_API_URL=http://localhost:8000
+   
+   # YOLO Model (default is 'yolov8s.pt')
+   YOLO_MODEL=yolov8s.pt
    ```
 
 ## Running the Application
 
-1. Start the backend server:
+1. Start the backend server (from the project root):
+   ```bash
+   cd backend
+   uvicorn app.main:app --reload --port 8000
+   ```
+   The API will be available at `http://localhost:8000`
+   - API documentation: `http://localhost:8000/docs`
+   - Interactive API docs: `http://localhost:8000/redoc`
+
+2. In a new terminal, start the frontend development server:
+   ```bash
+   cd frontend
+   npm run dev
+   ```
+   The frontend will be available at `http://localhost:5173`
+
+3. (Optional) For production, build the frontend first:
+   ```bash
+   cd frontend
+   npm run build
+   ```
+   Then serve the built files using a static file server.
    ```bash
    cd backend
    uvicorn app.main:app --reload

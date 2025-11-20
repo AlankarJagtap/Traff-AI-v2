@@ -35,7 +35,8 @@ class VideoProcessor:
         input_path: str,
         output_path: str,
         calibration_data: dict = None,
-        progress_callback=None
+        progress_callback=None,
+        enable_speed_calculation: bool = True,
     ):
         """
         Process video with zone-based speed detection
@@ -45,6 +46,7 @@ class VideoProcessor:
             output_path: Path to save processed video
             calibration_data: Zone calibration data (if None, uses fallback)
             progress_callback: Callback function(current_frame, total_frames)
+            enable_speed_calculation: Enable speed calculation (default: True)
         
         Returns:
             dict with processing statistics
@@ -83,12 +85,22 @@ class VideoProcessor:
         )
         
         # Initialize speed estimator
-        if calibration_data and calibration_data.get("calibrated"):
-            logger.info("Using zone-based speed estimation with calibration")
-            speed_estimator = ZonedSpeedEstimator(calibration_data)
+        if enable_speed_calculation:
+            if calibration_data and calibration_data.get("calibrated"):
+                mode = calibration_data.get("mode")
+                # New 4-point calibration is currently treated as global-scale fallback
+                if mode == "four_point" and not calibration_data.get("zones"):
+                    logger.info("4-point calibration detected - using fallback speed estimator for now")
+                    speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
+                else:
+                    logger.info("Using zone-based speed estimation with calibration")
+                    speed_estimator = ZonedSpeedEstimator(calibration_data)
+            else:
+                logger.warning("No calibration data - using fallback estimator")
+                speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
         else:
-            logger.warning("No calibration data - using fallback estimator")
-            speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
+            logger.info("Speed calculation disabled - skipping speed estimation")
+            speed_estimator = None
         
         # Statistics
         unique_vehicles = set()
@@ -134,10 +146,15 @@ class VideoProcessor:
                     for tracker_id, point in zip(detections.tracker_id, points):
                         # Add point to trajectory
                         vehicle_trajectories[tracker_id].append(tuple(point))
-                        
-                        # Calculate speed if we have enough points
+
+                        # Calculate speed if enabled and we have enough points
                         trajectory = list(vehicle_trajectories[tracker_id])
-                        
+
+                        if not enable_speed_calculation or speed_estimator is None:
+                            # Speed calculation disabled - show ID only
+                            labels.append(f"#{tracker_id}")
+                            continue
+
                         if len(trajectory) < video_info.fps / 4:  # Need at least 0.25 seconds of data
                             # Not enough data yet
                             labels.append(f"#{tracker_id}")
@@ -147,7 +164,7 @@ class VideoProcessor:
                                 trajectory_points=trajectory,
                                 fps=video_info.fps
                             )
-                            
+
                             if speed is not None and 0 < speed < 200:  # Sanity check
                                 all_speeds.append(speed)
                                 labels.append(f"#{tracker_id} {int(speed)} km/h")
@@ -175,16 +192,16 @@ class VideoProcessor:
                 if progress_callback and frame_count % 10 == 0:  # Update every 10 frames
                     progress_callback(frame_count, video_info.total_frames)
         
-    # Calculate statistics
+        # Calculate statistics
         stats = {
             "vehicle_count": len(unique_vehicles),
-            "avg_speed": np.mean(all_speeds) if all_speeds else None,
-            "max_speed": np.max(all_speeds) if all_speeds else None,
-            "min_speed": np.min(all_speeds) if all_speeds else None,
+            "avg_speed": np.mean(all_speeds) if enable_speed_calculation and all_speeds else None,
+            "max_speed": np.max(all_speeds) if enable_speed_calculation and all_speeds else None,
+            "min_speed": np.min(all_speeds) if enable_speed_calculation and all_speeds else None,
             "total_frames": video_info.total_frames,
             "fps": video_info.fps,
             "duration": video_info.total_frames / video_info.fps,
-            "speeds_calculated": len(all_speeds)
+            "speeds_calculated": len(all_speeds) if enable_speed_calculation else 0,
         }
         
         # Format avg_speed for logging

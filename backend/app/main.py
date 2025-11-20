@@ -3,7 +3,7 @@ FastAPI main application with comprehensive logging
 """
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from pathlib import Path
 from datetime import datetime
@@ -21,9 +21,8 @@ from .schemas import (
     VideoStatusResponse,
     AnalyticsSummary,
     ProcessingRequest,
-    CalibrationZone,
     CalibrationResponse,
-    CalibrationRequest
+    CalibrationRequest,
 )
 
 # ============================================================================
@@ -260,7 +259,8 @@ def process_video_task(video_id: int, db: Session, config: ProcessingRequest):
             input_path=video.original_path,
             output_path=str(output_path),
             calibration_data=video.calibration_data,  # ← Pass calibration data
-            progress_callback=update_progress
+            progress_callback=update_progress,
+            enable_speed_calculation=config.enable_speed_calculation,
         )
         
         logger.info(f"Video processing completed for ID: {video_id}")
@@ -625,55 +625,61 @@ def get_analytics_summary(db: Session = Depends(get_db)):
 async def calibrate_video(
     video_id: int,
     calibration_request: CalibrationRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """
-    Calibrate video for accurate speed estimation
-    User provides zones with reference points and real-world distances
+    """Calibrate video using 4-point perspective setup.
+
+    The frontend sends exactly four points clicked on a calibration frame
+    plus a known real-world distance in meters.
     """
     logger.info(f"Calibration request for video ID: {video_id}")
-    
+
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
-        
+
         if not video:
             logger.warning(f"Video not found for calibration: ID {video_id}")
             raise HTTPException(status_code=404, detail="Video not found")
-        
-        # Import speed estimator
-        from .speed_estimator import ZonedSpeedEstimator
-        
-        # Create estimator
-        estimator = ZonedSpeedEstimator()
-        
-        # Add each zone
-        for zone_data in calibration_request.zones:
-            estimator.add_zone(
-                name=zone_data.name,
-                y_min=zone_data.y_min,
-                y_max=zone_data.y_max,
-                reference_point1=zone_data.reference_point1,
-                reference_point2=zone_data.reference_point2,
-                real_distance=zone_data.real_distance
-            )
-            logger.info(f"Added zone '{zone_data.name}': y={zone_data.y_min}-{zone_data.y_max}, distance={zone_data.real_distance}m")
-        
-        # Get calibration data
-        calibration_data = estimator.get_calibration_data()
-        
-        # Save to database
+
+        points = calibration_request.points or []
+        reference_distance = calibration_request.reference_distance
+
+        if len(points) != 4:
+            logger.warning(f"Invalid calibration points for video {video_id}: expected 4, got {len(points)}")
+            raise HTTPException(status_code=400, detail="Exactly 4 calibration points are required")
+
+        if reference_distance <= 0:
+            logger.warning(f"Invalid reference distance for video {video_id}: {reference_distance}")
+            raise HTTPException(status_code=400, detail="Reference distance must be positive")
+
+        # Prepare calibration payload for storage
+        target_width = 25
+        target_height = int(reference_distance * 10)  # mimic original app scale
+
+        calibration_data = {
+            "mode": "four_point",
+            "points": points,
+            "reference_distance": reference_distance,
+            "target_width": target_width,
+            "target_height": target_height,
+            "calibrated": True,
+        }
+
         video.calibration_data = calibration_data
         video.calibrated_at = datetime.utcnow()
         db.commit()
-        
-        logger.info(f"Video {video_id} calibrated successfully with {len(calibration_request.zones)} zones")
-        
+
+        logger.info(
+            f"Video {video_id} calibrated successfully with 4-point perspective; "
+            f"reference_distance={reference_distance}m"
+        )
+
         return {
             "video_id": video_id,
             "calibration_data": calibration_data,
-            "message": f"Video calibrated successfully with {len(calibration_request.zones)} zone(s)"
+            "message": "Video calibrated successfully using 4-point perspective",
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -736,6 +742,58 @@ async def delete_calibration(
     except Exception as e:
         logger.error(f"Failed to delete calibration for video {video_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete calibration")
+
+
+@app.get("/api/videos/{video_id}/frame")
+def get_video_frame(
+    video_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return the first frame of the original video as a JPEG image.
+
+    Used by the frontend calibration page to let the user click 4 points.
+    """
+    logger.debug(f"Frame request for video ID: {video_id}")
+
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+
+        if not video:
+            logger.warning(f"Video not found for frame extraction: ID {video_id}")
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        if not video.original_path or not Path(video.original_path).exists():
+            logger.error(f"Original video file not found for frame extraction: {video.original_path}")
+            raise HTTPException(status_code=404, detail="Original video file not found")
+
+        # Lazy import to avoid heavy deps at startup
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(video.original_path)
+        if not cap.isOpened():
+            logger.error(f"Failed to open video file for frame extraction: {video.original_path}")
+            raise HTTPException(status_code=500, detail="Cannot open video file")
+
+        success, frame = cap.read()
+        cap.release()
+
+        if not success or frame is None:
+            logger.error(f"Failed to read frame from video: {video.original_path}")
+            raise HTTPException(status_code=500, detail="Cannot read frame from video")
+
+        success, buffer = cv2.imencode(".jpg", frame)
+        if not success:
+            logger.error("Failed to encode video frame as JPEG")
+            raise HTTPException(status_code=500, detail="Failed to encode video frame")
+
+        logger.debug(f"Returning JPEG frame for video ID {video_id}")
+        return Response(content=buffer.tobytes(), media_type="image/jpeg")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to extract frame for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to extract video frame")
 
 
 @app.get("/api/health")

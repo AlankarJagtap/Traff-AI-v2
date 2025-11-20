@@ -75,6 +75,7 @@ function App() {
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/videos" element={<VideosPage />} />
           <Route path="/videos/:id" element={<VideoDetailPage />} />
+          <Route path="/videos/:id/calibrate" element={<CalibrationPage />} />
         </Routes>
       </main>
 
@@ -82,7 +83,7 @@ function App() {
       <footer className="bg-white border-t mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <p className="text-center text-gray-500 text-sm">
-            © 2024 ProjectCars - Built with FastAPI + React
+            2024 ProjectCars - Built with FastAPI + React
           </p>
         </div>
       </footer>

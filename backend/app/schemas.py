@@ -69,21 +69,15 @@ class ProcessingRequest(BaseModel):
     """Schema for processing configuration"""
     confidence_threshold: float = 0.3
     iou_threshold: float = 0.7
-
-
-class CalibrationZone(BaseModel):
-    """Schema for a single calibration zone"""
-    name: str
-    y_min: int
-    y_max: int
-    reference_point1: List[float]  # [x, y]
-    reference_point2: List[float]  # [x, y]
-    real_distance: float  # meters
+    enable_speed_calculation: bool = False
 
 
 class CalibrationRequest(BaseModel):
-    """Schema for calibration data"""
-    zones: List[CalibrationZone]
+    """Schema for 4-point calibration data"""
+    # Four points clicked on the calibration frame: [[x1, y1], ..., [x4, y4]]
+    points: List[List[float]]
+    # Known real-world distance in meters between vertical extent of the selected region
+    reference_distance: float
 
 
 class CalibrationResponse(BaseModel):
