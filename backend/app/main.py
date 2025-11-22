@@ -15,7 +15,7 @@ import sys
 
 from .config import settings
 from .database import get_db, init_db
-from .models import Video
+from .models import Video, VehicleDetection
 from .schemas import (
     VideoResponse,
     VideoStatusResponse,
@@ -23,7 +23,10 @@ from .schemas import (
     ProcessingRequest,
     CalibrationResponse,
     CalibrationRequest,
+    VehicleDetectionResponse,  # ← ADD THIS
 )
+import csv
+import io   
 
 # ============================================================================
 # LOGGING SETUP
@@ -213,19 +216,21 @@ def get_video_info(file_path: str) -> dict:
 
 
 
-def process_video_task(video_id: int, db: Session, config: ProcessingRequest):
+def process_video_task(video_id: int, config: ProcessingRequest):
     """Background task for video processing with zone-based speed estimation"""
-    logger.info(f"Starting background processing task for video ID: {video_id}")
-    
-    video = db.query(Video).filter(Video.id == video_id).first()
-    
-    if not video:
-        logger.error(f"Video not found in database: ID {video_id}")
-        return
-    
-    logger.info(f"Processing video: {video.filename} (ID: {video_id})")
+    # Create new database session for background task
+    from .database import SessionLocal
+    db = SessionLocal()
     
     try:
+        logger.info(f"Starting background processing task for video ID: {video_id}")
+        
+        video = db.query(Video).filter(Video.id == video_id).first()
+        
+        if not video:
+            logger.error(f"Video not found in database: ID {video_id}")
+            return
+            
         # Update status
         video.status = "processing"
         db.commit()
@@ -258,42 +263,41 @@ def process_video_task(video_id: int, db: Session, config: ProcessingRequest):
         stats = processor.process_video(
             input_path=video.original_path,
             output_path=str(output_path),
-            calibration_data=video.calibration_data,  # ← Pass calibration data
+            calibration_data=video.calibration_data,
             progress_callback=update_progress,
-            enable_speed_calculation=config.enable_speed_calculation,
+            enable_speed_calculation=config.enable_speed_calculation if hasattr(config, 'enable_speed_calculation') else True,
+            speed_limit=config.speed_limit if hasattr(config, 'speed_limit') else 80.0,
+            video_id=video_id,  # ✅ ADD THIS LINE
+            db=db  # ✅ ADD THIS LINE
         )
         
-        logger.info(f"Video processing completed for ID: {video_id}")
-        logger.info(f"Processing stats: {stats}")
-        
-        # Update video record
+        # Update video record on success
         video.status = "completed"
         video.processed_path = str(output_path)
-        video.vehicle_count = stats["vehicle_count"]
-        video.avg_speed = float(stats["avg_speed"]) if stats["avg_speed"] is not None else None
-        video.max_speed = float(stats["max_speed"]) if stats.get("max_speed") is not None else None
-        video.min_speed = float(stats["min_speed"]) if stats.get("min_speed") is not None else None
+        video.processed_frames = video.total_frames
+        video.vehicle_count = stats.get('vehicle_count', 0)
         video.processed_at = datetime.utcnow()
-        video.error_message = None
-
+        video.speed_limit = config.speed_limit if hasattr(config, 'speed_limit') else 50.0
         db.commit()
-
-        # Format avg_speed for logging
-        avg_speed_text = f"{video.avg_speed:.1f}" if video.avg_speed else "N/A"
-        logger.info(f"Video record updated: {video.vehicle_count} vehicles detected, avg speed: {avg_speed_text} km/h")
-        logger.info(f"Successfully completed processing for video ID: {video_id}")
+        
+        logger.info(f"Video processing completed successfully for ID: {video_id}")
+        logger.info(f"Stats: {stats}")
+        
     except Exception as e:
-        # Handle errors
         error_msg = str(e)
         logger.error(f"Processing failed for video ID {video_id}: {error_msg}", exc_info=True)
         
-        video.status = "failed"
-        video.error_message = error_msg
-        db.commit()
-        
-        logger.error(f"Video status set to 'failed' for ID: {video_id}")
-
-
+        try:
+            video = db.query(Video).filter(Video.id == video_id).first()
+            if video:
+                video.status = "failed"
+                video.error_message = error_msg
+                db.commit()
+        except Exception as db_error:
+            logger.error(f"Failed to update video status: {str(db_error)}")
+    
+    finally:
+        db.close()  # Always close the session
 # ============================================================================
 # API ROUTES
 # ============================================================================
@@ -439,7 +443,7 @@ async def start_processing(
         logger.info(f"Adding processing task to background tasks for video ID: {video_id}")
         
         # Add background task
-        background_tasks.add_task(process_video_task, video_id, db, config)
+        background_tasks.add_task(process_video_task, video_id, config)
         
         # Update status immediately
         video.status = "processing"
@@ -808,6 +812,66 @@ def get_video_frame(
         logger.error(f"Failed to extract frame for video {video_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to extract video frame")
 
+@app.get("/api/videos/{video_id}/detections", response_model=list[VehicleDetectionResponse])
+def get_video_detections(video_id: int, db: Session = Depends(get_db)):
+    """Get all vehicle detections for a video"""
+    logger.debug(f"Get detections request: ID {video_id}")
+    
+    try:
+        detections = db.query(VehicleDetection).filter(VehicleDetection.video_id == video_id).all()
+        return [d.to_dict() for d in detections]
+        
+    except Exception as e:
+        logger.error(f"Failed to get detections for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve detections")
+
+
+@app.get("/api/videos/{video_id}/report/csv")
+def download_report(video_id: int, db: Session = Depends(get_db)):
+    """Generate and download CSV report"""
+    logger.info(f"Report download request for video ID: {video_id}")
+    
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+            
+        detections = db.query(VehicleDetection).filter(VehicleDetection.video_id == video_id).all()
+        
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(['Vehicle ID', 'Time (s)', 'Frame', 'Speed (km/h)', 'Speed Limit (km/h)', 'Status'])
+        
+        # Write data
+        for d in detections:
+            status = "Speeding" if d.is_speeding else "Normal"
+            writer.writerow([
+                d.track_id, 
+                f"{d.timestamp:.2f}", 
+                d.frame_number, 
+                f"{d.speed:.1f}", 
+                video.speed_limit, 
+                status
+            ])
+            
+        output.seek(0)
+        
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=report_{video.filename}_{datetime.now().strftime('%Y%m%d')}.csv"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate report for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate report")
 
 @app.get("/api/health")
 def health_check():

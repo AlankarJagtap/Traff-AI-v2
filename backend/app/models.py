@@ -1,7 +1,8 @@
 """
 SQLAlchemy database models with calibration support
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, ForeignKey, Boolean
+from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
 
@@ -34,21 +35,11 @@ class Video(Base):
     max_speed = Column(Float, nullable=True)
     min_speed = Column(Float, nullable=True)
     
+    # Configuration used for processing
+    speed_limit = Column(Float, default=80.0, nullable=True)
+    
     # Calibration data (stored as JSON)
     calibration_data = Column(JSON, nullable=True)
-    # Structure: {
-    #   "zones": [
-    #     {
-    #       "name": "near",
-    #       "y_range": [y_min, y_max],
-    #       "reference_points": [[x1, y1], [x2, y2]],
-    #       "real_distance": 10.0,  # meters
-    #       "pixels_per_meter": 25.5
-    #     },
-    #     ...
-    #   ],
-    #   "calibrated": true
-    # }
     
     # Timestamps
     uploaded_at = Column(DateTime, default=datetime.utcnow)
@@ -57,6 +48,9 @@ class Video(Base):
     
     # Error handling
     error_message = Column(Text, nullable=True)
+    
+    # Relationships
+    detections = relationship("VehicleDetection", back_populates="video", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Video(id={self.id}, filename={self.filename}, status={self.status})>"
@@ -75,6 +69,7 @@ class Video(Base):
             "avg_speed": self.avg_speed,
             "max_speed": self.max_speed,
             "min_speed": self.min_speed,
+            "speed_limit": self.speed_limit,
             "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else None,
             "processed_at": self.processed_at.isoformat() if self.processed_at else None,
             "calibrated_at": self.calibrated_at.isoformat() if self.calibrated_at else None,
@@ -93,3 +88,33 @@ class Video(Base):
         if self.total_frames and self.processed_frames:
             return int((self.processed_frames / self.total_frames) * 100)
         return 0
+
+
+class VehicleDetection(Base):
+    """Model to store individual vehicle detection data"""
+    __tablename__ = "vehicle_detections"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    video_id = Column(Integer, ForeignKey("videos.id"), nullable=False)
+    
+    track_id = Column(Integer, nullable=False)
+    timestamp = Column(Float, nullable=False)  # Time in seconds from start
+    frame_number = Column(Integer, nullable=False)
+    speed = Column(Float, nullable=False)
+    is_speeding = Column(Boolean, default=False)
+    
+    # Optional: Store bounding box or other metadata if needed later
+    # bbox = Column(JSON, nullable=True) 
+    
+    video = relationship("Video", back_populates="detections")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "video_id": self.video_id,
+            "track_id": self.track_id,
+            "timestamp": self.timestamp,
+            "frame_number": self.frame_number,
+            "speed": self.speed,
+            "is_speeding": self.is_speeding
+        }

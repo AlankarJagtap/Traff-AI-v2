@@ -10,6 +10,7 @@ from pathlib import Path
 from .config import settings
 from .speed_estimator import ZonedSpeedEstimator, SimpleFallbackEstimator, FourPointSpeedEstimator
 import logging
+import copy
 
 logger = logging.getLogger("projectcars")
 
@@ -37,6 +38,10 @@ class VideoProcessor:
         calibration_data: dict = None,
         progress_callback=None,
         enable_speed_calculation: bool = True,
+        speed_limit: float = 80.0,
+        target_width: int = 1280,
+        video_id: int = None,  # ← ADD THIS
+        db = None,  # ← ADD THIS
     ):
         """
         Process video with zone-based speed detection
@@ -47,22 +52,65 @@ class VideoProcessor:
             calibration_data: Zone calibration data (if None, uses fallback)
             progress_callback: Callback function(current_frame, total_frames)
             enable_speed_calculation: Enable speed calculation (default: True)
+            speed_limit: Speed limit for flagging violations (default: 80.0)
+            target_width: Max width to process (resizes 4K/2K to this width)
         
         Returns:
-            dict with processing statistics
+            dict with processing statistics and vehicle data
         """
         # Load model
         model = self.load_model()
         
         # Get video info
         video_info = sv.VideoInfo.from_video_path(video_path=input_path)
-        logger.info(f"Processing video: {video_info.width}x{video_info.height}, {video_info.fps} FPS, {video_info.total_frames} frames")
+        original_width = video_info.width
+        original_height = video_info.height
         
+        logger.info(f"Processing video: {original_width}x{original_height}, {video_info.fps} FPS, {video_info.total_frames} frames")
+        
+        # Calculate scaling factor if needed
+        scale_factor = 1.0
+        if original_width > target_width:
+            scale_factor = target_width / original_width
+            new_width = target_width
+            new_height = int(original_height * scale_factor)
+            
+            logger.info(f"Resizing video for processing: {original_width}x{original_height} -> {new_width}x{new_height} (scale={scale_factor:.2f})")
+            
+            # Update video info for the sink (output video will be smaller)
+            video_info.width = new_width
+            video_info.height = new_height
+        else:
+            new_width = original_width
+            new_height = original_height
+
+        # Handle calibration data scaling
+        scaled_calibration_data = None
+        if calibration_data:
+            scaled_calibration_data = copy.deepcopy(calibration_data)
+            
+            if scale_factor != 1.0:
+                # Scale 4-point calibration
+                if "points" in scaled_calibration_data:
+                    points = scaled_calibration_data["points"]
+                    scaled_points = [[p[0] * scale_factor, p[1] * scale_factor] for p in points]
+                    scaled_calibration_data["points"] = scaled_points
+                    logger.info("Scaled calibration points for resized video")
+                
+                # Scale zones (legacy)
+                if "zones" in scaled_calibration_data:
+                    for zone in scaled_calibration_data["zones"]:
+                        if "y_range" in zone:
+                            zone["y_range"] = [y * scale_factor for y in zone["y_range"]]
+                        # pixels_per_meter also changes linearly with scale
+                        if "pixels_per_meter" in zone:
+                            zone["pixels_per_meter"] *= scale_factor
+
         # Optional polygon zone for 4-point calibration (limit speeds to calibrated area)
         polygon_zone = None
-        if enable_speed_calculation and calibration_data and calibration_data.get("mode") == "four_point":
+        if enable_speed_calculation and scaled_calibration_data and scaled_calibration_data.get("mode") == "four_point":
             try:
-                polygon_points = np.array(calibration_data.get("points", []), dtype=np.int32)
+                polygon_points = np.array(scaled_calibration_data.get("points", []), dtype=np.int32)
                 if polygon_points.shape == (4, 2):
                     polygon_zone = sv.PolygonZone(polygon=polygon_points)
                     logger.info("Polygon zone created from 4-point calibration")
@@ -103,26 +151,29 @@ class VideoProcessor:
         
         # Initialize speed estimator
         if enable_speed_calculation:
-            if calibration_data and calibration_data.get("calibrated"):
-                mode = calibration_data.get("mode")
+            if scaled_calibration_data and scaled_calibration_data.get("calibrated"):
+                mode = scaled_calibration_data.get("mode")
 
                 # New 4-point homography-based calibration
-                if mode == "four_point" and not calibration_data.get("zones"):
+                if mode == "four_point" and not scaled_calibration_data.get("zones"):
                     logger.info("Using 4-point homography-based speed estimation")
-                    speed_estimator = FourPointSpeedEstimator(calibration_data)
+                    speed_estimator = FourPointSpeedEstimator(scaled_calibration_data)
 
                 # Legacy zone-based calibration
-                elif calibration_data.get("zones"):
+                elif scaled_calibration_data.get("zones"):
                     logger.info("Using zone-based speed estimation with calibration")
-                    speed_estimator = ZonedSpeedEstimator(calibration_data)
+                    speed_estimator = ZonedSpeedEstimator(scaled_calibration_data)
 
                 # Calibrated flag set but no usable data
                 else:
                     logger.warning("Calibrated flag set but no 4-point or zone data - falling back to simple estimator")
-                    speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
+                    # Adjust fallback pixels_per_meter for scale
+                    fallback_ppm = 25.0 * scale_factor
+                    speed_estimator = SimpleFallbackEstimator(pixels_per_meter=fallback_ppm)
             else:
                 logger.warning("No calibration data - using fallback estimator")
-                speed_estimator = SimpleFallbackEstimator(pixels_per_meter=25.0)
+                fallback_ppm = 25.0 * scale_factor
+                speed_estimator = SimpleFallbackEstimator(pixels_per_meter=fallback_ppm)
         else:
             logger.info("Speed calculation disabled - skipping speed estimation")
             speed_estimator = None
@@ -135,12 +186,20 @@ class VideoProcessor:
         # Track vehicle trajectories (for speed calculation)
         vehicle_trajectories = defaultdict(lambda: deque(maxlen=video_info.fps))
         
+        # Store max speed data for each vehicle: {track_id: {'speed': float, 'frame': int, 'timestamp': float}}
+        vehicle_max_speeds = {}
+        
         # Process video
         frame_generator = sv.get_video_frames_generator(source_path=input_path)
         
         with sv.VideoSink(output_path, video_info) as sink:
             for frame in frame_generator:
+                # Resize frame if needed
+                if scale_factor != 1.0:
+                    frame = cv2.resize(frame, (new_width, new_height))
+
                 frame_count += 1
+                current_timestamp = frame_count / video_info.fps
                 
                 # Run detection
                 result = model(frame)[0]
@@ -200,6 +259,20 @@ class VideoProcessor:
 
                             if speed is not None and 0 < speed < 200:  # Sanity check
                                 all_speeds.append(speed)
+                                
+                                # Update max speed for this vehicle
+                                if tracker_id not in vehicle_max_speeds or speed > vehicle_max_speeds[tracker_id]['speed']:
+                                    vehicle_max_speeds[tracker_id] = {
+                                        'speed': speed,
+                                        'frame': frame_count,
+                                        'timestamp': current_timestamp
+                                    }
+                                
+                                # Color code based on speed limit
+                                color_hex = "#00FF00" # Green
+                                if speed > speed_limit:
+                                    color_hex = "#FF0000" # Red
+                                    
                                 labels.append(f"#{tracker_id} {int(speed)} km/h")
                             else:
                                 labels.append(f"#{tracker_id}")
@@ -225,6 +298,32 @@ class VideoProcessor:
                 if progress_callback and frame_count % 10 == 0:  # Update every 10 frames
                     progress_callback(frame_count, video_info.total_frames)
         
+        # After the main processing loop (after the 'with sv.VideoSink...' block)
+                
+        # Save vehicle detections to database if db session provided
+        if db and video_id:
+            try:
+                from .models import VehicleDetection
+                
+                logger.info(f"Saving {len(vehicle_max_speeds)} vehicle detections to database")
+                
+                for track_id, detection_data in vehicle_max_speeds.items():
+                    detection = VehicleDetection(
+                        video_id=video_id,
+                        track_id=int(track_id),
+                        timestamp=detection_data['timestamp'],
+                        frame_number=detection_data['frame'],
+                        speed=detection_data['speed'],
+                        is_speeding=detection_data['speed'] > speed_limit
+                    )
+                    db.add(detection)
+                
+                db.commit()
+                logger.info(f"Vehicle detections saved successfully for video ID {video_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to save vehicle detections: {str(e)}", exc_info=True)
+                # Don't fail the entire processing if detection saving fails
         # Calculate statistics
         stats = {
             "vehicle_count": len(unique_vehicles),
@@ -235,6 +334,7 @@ class VideoProcessor:
             "fps": video_info.fps,
             "duration": video_info.total_frames / video_info.fps,
             "speeds_calculated": len(all_speeds) if enable_speed_calculation else 0,
+            "vehicle_detections": vehicle_max_speeds # Return per-vehicle data
         }
         
         # Format avg_speed for logging
