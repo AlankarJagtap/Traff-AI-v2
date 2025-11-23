@@ -5,7 +5,7 @@ import axios from 'axios';
 
 // Create axios instance with default config
 const api = axios.create({
-  baseURL: 'http://localhost:8000/api',
+  baseURL: import.meta.env.VITE_API_URL + '/api',
   headers: {
     'Content-Type': 'application/json',
   },
@@ -97,6 +97,7 @@ export const videoAPI = {
       confidence_threshold: config.confidence_threshold || 0.3,
       iou_threshold: config.iou_threshold || 0.7,
       enable_speed_calculation: config.enable_speed_calculation || false,
+      speed_limit: config.speed_limit || 80.0,
     });
     return response.data;
   },
@@ -117,8 +118,7 @@ export const videoAPI = {
    * @returns {string} Download URL
    */
   getDownloadUrl: (id) => {
-    return `http://localhost:8000/api/videos/${id}/download`;
-  },
+    return `${import.meta.env.VITE_API_URL}/api/videos/${id}/download`;  },
 
   /**
    * Delete a video
@@ -160,6 +160,26 @@ export const videoAPI = {
     const response = await api.delete(`/videos/${id}/calibration`);
     return response.data;
   },
+
+  /**
+   * Get vehicle detections for a video
+   * @param {number} id - Video ID
+   * @returns {Promise} List of detections
+   */
+  getDetections: async (id) => {
+    const response = await api.get(`/videos/${id}/detections`);
+    return response.data;
+  },
+
+  /**
+   * Get download URL for CSV report
+   * @param {number} id - Video ID
+   * @returns {string} Download URL
+   */
+  getReportDownloadUrl: (id) => {
+  return `${import.meta.env.VITE_API_URL}/api/videos/${id}/report/csv`;
+  },
+
 };
 
 // Analytics API endpoints

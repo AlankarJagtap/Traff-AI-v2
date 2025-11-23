@@ -4,6 +4,7 @@ import UploadPage from './pages/UploadPage'
 import VideosPage from './pages/VideosPage'
 import VideoDetailPage from './pages/VideoDetailPage'
 import CalibrationPage from './pages/CalibrationPage'
+import ReportPage from './pages/ReportPage'
 
 function App() {
   const location = useLocation()
@@ -76,6 +77,7 @@ function App() {
           <Route path="/videos" element={<VideosPage />} />
           <Route path="/videos/:id" element={<VideoDetailPage />} />
           <Route path="/videos/:id/calibrate" element={<CalibrationPage />} />
+          <Route path="/videos/:id/report" element={<ReportPage />} />
         </Routes>
       </main>
 

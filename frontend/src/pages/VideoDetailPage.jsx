@@ -16,6 +16,7 @@ function VideoDetailPage() {
     confidence_threshold: 0.3,
     iou_threshold: 0.7,
     enable_speed_calculation: false,
+    speed_limit: 80.0,
   })
 
   // Fetch video details
@@ -152,16 +153,27 @@ function VideoDetailPage() {
             </Link>
           )}
           {video.status === 'completed' && (
-            <a
-              href={videoAPI.getDownloadUrl(video.id)}
-              download
-              className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700"
-            >
-              <svg className="mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Download
-            </a>
+            <>
+              <Link
+                to={`/videos/${video.id}/report`}
+                className="inline-flex items-center px-4 py-2 border border-primary-300 rounded-md shadow-sm text-sm font-medium text-primary-700 bg-white hover:bg-primary-50"
+              >
+                <svg className="mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                View Report
+              </Link>
+              <a
+                href={videoAPI.getDownloadUrl(video.id)}
+                download
+                className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700"
+              >
+                <svg className="mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Download Video
+              </a>
+            </>
           )}
           <button
             onClick={handleDelete}
@@ -326,6 +338,24 @@ function VideoDetailPage() {
                 </span>
               </label>
             </div>
+            {processingConfig.enable_speed_calculation && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
+                  Speed Limit (km/h)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="300"
+                  value={processingConfig.speed_limit}
+                  onChange={(e) => setProcessingConfig({
+                    ...processingConfig,
+                    speed_limit: parseFloat(e.target.value)
+                  })}
+                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                />
+              </div>
+            )}
             <button
               onClick={handleProcess}
               disabled={processMutation.isPending}
