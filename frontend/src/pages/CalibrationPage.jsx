@@ -37,7 +37,7 @@ function CalibrationPage() {
   const frameQuery = useQuery({
     queryKey: ['video-frame', id],
     queryFn: async () => {
-      const response = await fetch(`http://localhost:8000/api/videos/${id}/frame`)
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/videos/${id}/frame`)
       if (!response.ok) {
         throw new Error('Failed to load video frame for calibration')
       }
