@@ -18,7 +18,10 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
     # Download YOLO model
-RUN wget https://github.com/ultralytics/assets/releases/download/v8.2.0/yolo11m.pt -O /app/yolo11m.pt
+
+# Download YOLO model
+RUN curl -L https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt -o /app/yolo11n.pt
+
 
 # Copy backend code
 COPY . .
