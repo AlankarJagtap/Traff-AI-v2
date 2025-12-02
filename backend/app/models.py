@@ -19,6 +19,7 @@ class Video(Base):
     filename = Column(String, nullable=False)
     original_path = Column(String, nullable=False)
     processed_path = Column(String, nullable=True)
+    celery_task_id = Column(String, nullable=True)
     
     # Processing status
     status = Column(String, default="uploaded", nullable=False)

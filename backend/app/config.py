@@ -25,7 +25,18 @@ class Settings(BaseSettings):
     IOU_THRESHOLD: float = 0.7
     
     # CORS
-    CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000","https://nonvisional-silky-randi.ngrok-free.dev"]
+    
+    
+    # Redis Configuration (ADD THIS)
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_URL: str = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+    
+    # Celery Configuration (ADD THIS)
+    CELERY_BROKER_URL: str = REDIS_URL
+    CELERY_RESULT_BACKEND: str = REDIS_URL
     
     class Config:
         env_file = ".env"

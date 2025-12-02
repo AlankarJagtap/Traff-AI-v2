@@ -11,6 +11,7 @@ from .config import settings
 from .speed_estimator import ZonedSpeedEstimator, SimpleFallbackEstimator, FourPointSpeedEstimator
 import logging
 import copy
+import torch
 
 logger = logging.getLogger("projectcars")
 
@@ -18,17 +19,36 @@ logger = logging.getLogger("projectcars")
 class VideoProcessor:
     """Main video processor with zone-based speed estimation"""
     
-    def __init__(self, confidence_threshold: float = 0.3, iou_threshold: float = 0.7):
+    # At the top of video_processor.py, update the class definition:
+
+class VideoProcessor:
+    """Main video processor with GPU/CPU device support"""
+    
+    def __init__(
+        self, 
+        confidence_threshold: float = 0.3, 
+        iou_threshold: float = 0.7,
+        device: str = 'cuda'  # ← ADD THIS
+    ):
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
+        self.device = device  # ← ADD THIS
         self.model = None
     
     def load_model(self):
-        """Load YOLO model (lazy loading)"""
+        """Load YOLO model (lazy loading) and move to device"""
         if self.model is None:
-            logger.info("Loading YOLO model...")
+            logger.info(f"Loading YOLO model on {self.device}...")
             self.model = YOLO(settings.YOLO_MODEL)
-            logger.info("YOLO model loaded successfully")
+            
+            # Move model to specified device
+            if self.device == 'cuda' and torch.cuda.is_available():
+                self.model.to('cuda')
+                logger.info(f"✅ Model loaded on GPU: {torch.cuda.get_device_name(0)}")
+            else:
+                self.model.to('cpu')
+                logger.info("✅ Model loaded on CPU")
+        
         return self.model
     
     def process_video(
@@ -326,15 +346,16 @@ class VideoProcessor:
                 # Don't fail the entire processing if detection saving fails
         # Calculate statistics
         stats = {
-            "vehicle_count": len(unique_vehicles),
-            "avg_speed": np.mean(all_speeds) if enable_speed_calculation and all_speeds else None,
-            "max_speed": np.max(all_speeds) if enable_speed_calculation and all_speeds else None,
-            "min_speed": np.min(all_speeds) if enable_speed_calculation and all_speeds else None,
-            "total_frames": video_info.total_frames,
-            "fps": video_info.fps,
-            "duration": video_info.total_frames / video_info.fps,
-            "speeds_calculated": len(all_speeds) if enable_speed_calculation else 0,
-            "vehicle_detections": vehicle_max_speeds # Return per-vehicle data
+                "vehicle_count": len(unique_vehicles),
+                "avg_speed": float(np.mean(all_speeds)) if enable_speed_calculation and all_speeds else None,  # Convert to float
+                "max_speed": float(np.max(all_speeds)) if enable_speed_calculation and all_speeds else None,    # Convert to float
+                "min_speed": float(np.min(all_speeds)) if enable_speed_calculation and all_speeds else None,    # Convert to float
+                "total_frames": int(video_info.total_frames),  # Convert to int
+                "fps": float(video_info.fps),  # Convert to float
+                "duration": float(video_info.total_frames / video_info.fps),  # Convert to float
+                "speeds_calculated": len(all_speeds) if enable_speed_calculation else 0,
+                "vehicle_detections": {int(k): {'speed': float(v['speed']), 'frame': int(v['frame']), 'timestamp': float(v['timestamp'])} for k, v in vehicle_max_speeds.items()}  # Convert nested dict
+
         }
         
         # Format avg_speed for logging

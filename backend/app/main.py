@@ -12,6 +12,9 @@ import uuid
 import torch
 import logging
 import sys
+from celery.result import AsyncResult
+from .celery_app import celery_app, route_task_to_worker, get_system_status
+
 
 from .config import settings
 from .database import get_db, init_db
@@ -415,21 +418,21 @@ def get_video(video_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to retrieve video")
 
 
+
 @app.post("/api/videos/{video_id}/process", response_model=VideoStatusResponse)
 async def start_processing(
     video_id: int,
     config: ProcessingRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """Start video processing"""
-    logger.info(f"Process request received for video ID: {video_id}")
+    """Start video processing using Celery task queue"""
+    logger.info(f"📥 Process request received for video ID: {video_id}")
     
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
         
         if not video:
-            logger.warning(f"Video not found for processing: ID {video_id}")
+            logger.warning(f"Video not found: ID {video_id}")
             raise HTTPException(status_code=404, detail="Video not found")
         
         if video.status == "processing":
@@ -440,37 +443,38 @@ async def start_processing(
             logger.warning(f"Video already completed: ID {video_id}")
             raise HTTPException(status_code=400, detail="Video already processed")
         
-        logger.info(f"Adding processing task to background tasks for video ID: {video_id}")
+        # Route task to GPU or CPU worker via Celery
+        logger.info(f"🚀 Routing video {video_id} to Celery worker...")
+        task = route_task_to_worker(video_id, config.dict())
         
-        # Add background task
-        background_tasks.add_task(process_video_task, video_id, config)
-        
-        # Update status immediately
-        video.status = "processing"
+        # Save task ID to database
+        video.status = "queued"
+        video.celery_task_id = task.id
         db.commit()
         
-        logger.info(f"Video processing started: ID {video_id}")
+        logger.info(f"✅ Video {video_id} queued. Celery task ID: {task.id}")
         
         return {
             "id": video.id,
-            "status": video.status,
+            "status": "queued",
             "progress": 0,
             "processed_frames": 0,
             "total_frames": video.total_frames,
             "error_message": None,
-            "device": "cuda" if torch.cuda.is_available() else "cpu"
+            "device": "queued",
+            "task_id": task.id
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to start processing for video {video_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to start processing")
+        logger.error(f"Failed to queue processing for video {video_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
 
 
 @app.get("/api/videos/{video_id}/status", response_model=VideoStatusResponse)
 def get_processing_status(video_id: int, db: Session = Depends(get_db)):
-    """Get video processing status"""
+    """Get video processing status from Celery task"""
     logger.debug(f"Status request for video ID: {video_id}")
     
     try:
@@ -480,6 +484,50 @@ def get_processing_status(video_id: int, db: Session = Depends(get_db)):
             logger.warning(f"Video not found for status check: ID {video_id}")
             raise HTTPException(status_code=404, detail="Video not found")
         
+        # If video has Celery task ID, check task status
+        if video.celery_task_id and video.status in ["queued", "processing"]:
+            try:
+                task = AsyncResult(video.celery_task_id, app=celery_app)
+                
+                # Get task state
+                if task.state == 'PROCESSING':
+                    task_info = task.info or {}
+                    return {
+                        "id": video.id,
+                        "status": "processing",
+                        "progress": task_info.get('progress', 0),
+                        "processed_frames": task_info.get('current_frame', 0),
+                        "total_frames": task_info.get('total_frames', video.total_frames),
+                        "error_message": None,
+                        "device": task_info.get('device', 'unknown'),
+                        "worker_type": task_info.get('worker_type', 'unknown'),
+                        "task_status": task.state
+                    }
+                elif task.state == 'PENDING':
+                    return {
+                        "id": video.id,
+                        "status": "queued",
+                        "progress": 0,
+                        "processed_frames": 0,
+                        "total_frames": video.total_frames,
+                        "error_message": None,
+                        "device": "queued",
+                        "task_status": "PENDING"
+                    }
+                elif task.state == 'FAILURE':
+                    error = str(task.info) if task.info else "Unknown error"
+                    return {
+                        "id": video.id,
+                        "status": "failed",
+                        "progress": 0,
+                        "error_message": error,
+                        "device": "failed",
+                        "task_status": "FAILURE"
+                    }
+            except Exception as e:
+                logger.error(f"Error checking Celery task: {str(e)}")
+        
+        # Fallback to database status
         return {
             "id": video.id,
             "status": video.status,
@@ -487,7 +535,7 @@ def get_processing_status(video_id: int, db: Session = Depends(get_db)):
             "processed_frames": video.processed_frames,
             "total_frames": video.total_frames,
             "error_message": video.error_message,
-            "device": "cuda" if torch.cuda.is_available() else "cpu"
+            "device": "cpu" if torch.cuda.is_available() else "cpu"
         }
         
     except HTTPException:
@@ -872,6 +920,35 @@ def download_report(video_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to generate report for video {video_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate report")
+
+
+@app.get("/api/system/status")
+def get_system_status_endpoint():
+    """Get current system status (GPU, Redis, Workers)"""
+    try:
+        status = get_system_status()
+        
+        # Add active workers count
+        from celery.task.control import inspect
+        i = inspect(app=celery_app)
+        active_tasks = i.active()
+        
+        if active_tasks:
+            status['active_workers'] = len(active_tasks)
+            status['active_tasks'] = sum(len(tasks) for tasks in active_tasks.values())
+        else:
+            status['active_workers'] = 0
+            status['active_tasks'] = 0
+        
+        return status
+        
+    except Exception as e:
+        logger.error(f"Failed to get system status: {str(e)}")
+        return {
+            "error": str(e),
+            "redis_connected": False,
+            "gpu_available": False
+        }
 
 @app.get("/api/health")
 def health_check():

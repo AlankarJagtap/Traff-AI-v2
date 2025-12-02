@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { videoAPI } from '../services/api'
+import api from '../services/api'
+
 
 /**
  * Interactive Calibration Page
@@ -34,18 +36,19 @@ function CalibrationPage() {
   })
 
   // Fetch first frame for calibration
-  const frameQuery = useQuery({
-    queryKey: ['video-frame', id],
-    queryFn: async () => {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/videos/${id}/frame`)
-      if (!response.ok) {
-        throw new Error('Failed to load video frame for calibration')
-      }
-      const blob = await response.blob()
-      return URL.createObjectURL(blob)
-    },
-    enabled: !!video,
-  })
+const frameQuery = useQuery({
+  queryKey: ['video-frame', id],
+  queryFn: async () => {
+    const response = await api.get(`/videos/${id}/frame?ts=${Date.now()}`, {
+      responseType: 'blob',
+    })
+    return URL.createObjectURL(response.data)
+  },
+  enabled: !!video,
+})
+
+
+
 
   useEffect(() => {
     if (frameQuery.data) {

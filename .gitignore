@@ -35,8 +35,10 @@ venv/
 *.log
 
 # Uploads
-/uploads/*
-!/uploads/.gitkeep
+uploads/
+processed/
+
+
 
 # YOLO model weights
 *.pt

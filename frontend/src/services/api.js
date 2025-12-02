@@ -5,7 +5,7 @@ import axios from 'axios';
 
 // Create axios instance with default config
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL + '/api',
+  baseURL: '/api',  // ← Changed from absolute URL to relative
   headers: {
     'Content-Type': 'application/json',
   },
@@ -118,7 +118,8 @@ export const videoAPI = {
    * @returns {string} Download URL
    */
   getDownloadUrl: (id) => {
-    return `${import.meta.env.VITE_API_URL}/api/videos/${id}/download`;  },
+      return `/api/videos/${id}/download`;
+  },
 
   /**
    * Delete a video
@@ -177,8 +178,9 @@ export const videoAPI = {
    * @returns {string} Download URL
    */
   getReportDownloadUrl: (id) => {
-  return `${import.meta.env.VITE_API_URL}/api/videos/${id}/report/csv`;
+      return `/api/videos/${id}/report/csv`;
   },
+
 
 };
 
