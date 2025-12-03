@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 from collections import defaultdict, deque
 from ultralytics import YOLO
+from datetime import datetime
 import supervision as sv
 from pathlib import Path
 from .config import settings
@@ -12,8 +13,44 @@ from .speed_estimator import ZonedSpeedEstimator, SimpleFallbackEstimator, FourP
 import logging
 import copy
 import torch
+import easyocr
+# Directory for snapshots
+SNAPSHOT_DIR = Path("processed/snapshots")
+SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("projectcars")
+
+def save_snapshot(frame, video_id, track_id, frame_number):
+    """Save cropped frame as JPEG and return relative file path."""
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    filename = f"{video_id}_{track_id}_{frame_number}_{timestamp}.jpg"
+    file_path = SNAPSHOT_DIR / filename
+    cv2.imwrite(str(file_path), frame)
+    return str(file_path)  # return relative path
+
+ocr_reader = None
+
+def get_ocr_reader():
+    global ocr_reader
+    if ocr_reader is None:
+        ocr_reader = easyocr.Reader(['en'], gpu=False)
+    return ocr_reader
+
+def run_ocr(image_path):
+    reader = get_ocr_reader()
+    results = reader.readtext(image_path)
+    if not results:
+        return None, None
+
+    best = max(results, key=lambda r: r[2])
+    raw_text = best[1]
+    conf = float(best[2])
+
+    cleaned = "".join(c for c in raw_text.upper() if c.isalnum())
+    if len(cleaned) < 4:
+        return None, conf
+
+    return cleaned, conf
 
 
 class VideoProcessor:
@@ -59,10 +96,11 @@ class VideoProcessor:
         progress_callback=None,
         enable_speed_calculation: bool = True,
         speed_limit: float = 80.0,
+        enable_plate_detection: bool = False,     # ← ADD THIS
         target_width: int = 1280,
-        video_id: int = None,  # ← ADD THIS
-        db = None,  # ← ADD THIS
-    ):
+        video_id: int = None,
+        db = None,
+        ):
         """
         Process video with zone-based speed detection
         
@@ -208,6 +246,8 @@ class VideoProcessor:
         
         # Store max speed data for each vehicle: {track_id: {'speed': float, 'frame': int, 'timestamp': float}}
         vehicle_max_speeds = {}
+        best_snapshots = {}
+
         
         # Process video
         frame_generator = sv.get_video_frames_generator(source_path=input_path)
@@ -266,6 +306,44 @@ class VideoProcessor:
                             # Speed calculation disabled - show ID only
                             labels.append(f"#{tracker_id}")
                             continue
+                        
+                        # Get bbox for each detection
+                        bbox = detections.xyxy[detections.tracker_id == tracker_id]
+                        if len(bbox) > 0:
+                            x1, y1, x2, y2 = map(int, bbox[0])
+                            area = (x2 - x1) * (y2 - y1)
+
+                            # Store best snapshot (biggest bbox = closest = best plate visibility)
+                            if tracker_id not in best_snapshots or area > best_snapshots[tracker_id]["area"]:
+                                best_snapshots[tracker_id] = {
+                                    "area": area,
+                                    "crop": frame[y1:y2, x1:x2] if y2 > y1 and x2 > x1 else frame,
+                                    "frame_number": frame_count
+                                }
+                                
+                        # -----------------------------
+                        # SNAPSHOT SELECTION LOGIC
+                        # -----------------------------
+                        area = (x2 - x1) * (y2 - y1)
+
+                        # If first time or better snapshot (bigger bbox → vehicle closer)
+                        if tracker_id not in best_snapshots or area > best_snapshots[tracker_id]["area"]:
+                            # Crop vehicle from frame
+                            h, w = frame.shape[:2]
+                            x1c = max(0, min(x1, w - 1))
+                            y1c = max(0, min(y1, h - 1))
+                            x2c = max(0, min(x2, w - 1))
+                            y2c = max(0, min(y2, h - 1))
+
+                            crop = frame[y1c:y2c, x1c:x2c] if (y2c > y1c and x2c > x1c) else frame
+
+                            # Store best snapshot data
+                            best_snapshots[tracker_id] = {
+                                "area": area,
+                                "crop": crop,
+                                "frame_number": frame_count
+                            }
+
 
                         if len(trajectory) < video_info.fps / 4:  # Need at least 0.25 seconds of data
                             # Not enough data yet
@@ -336,9 +414,32 @@ class VideoProcessor:
                         speed=detection_data['speed'],
                         is_speeding=detection_data['speed'] > speed_limit
                     )
+
+                    # -----------------------------
+                    # SAVE SNAPSHOT + OCR (optional)
+                    # -----------------------------
+                    if track_id in best_snapshots:
+                        snap = best_snapshots[track_id]
+                        crop = snap["crop"]
+                        fnum = snap["frame_number"]
+
+                        # Save snapshot to file
+                        snapshot_path = save_snapshot(crop, video_id, track_id, fnum)
+                        detection.snapshot_path = snapshot_path
+
+                        # Run OCR only if enabled
+                        if enable_plate_detection:
+                            try:
+                                plate, conf = run_ocr(snapshot_path)
+                                detection.number_plate = plate
+                                detection.number_plate_confidence = conf
+                            except Exception as e:
+                                logger.error(f"OCR failed for track {track_id}: {e}")
+
                     db.add(detection)
-                
+
                 db.commit()
+
                 logger.info(f"Vehicle detections saved successfully for video ID {video_id}")
                 
             except Exception as e:

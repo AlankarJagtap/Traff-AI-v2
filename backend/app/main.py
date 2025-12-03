@@ -7,12 +7,14 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from pathlib import Path
 from datetime import datetime
+
 import shutil
 import uuid
 import torch
 import logging
 import sys
 from celery.result import AsyncResult
+from celery.app.control import Inspect
 from .celery_app import celery_app, route_task_to_worker, get_system_status
 
 
@@ -139,7 +141,10 @@ def startup_event():
         logger.info("Startup complete - API is ready")
         logger.info("Available routes:")
         for route in app.routes:
-            logger.info(f"  {route.methods} {route.path}")
+            route_type = type(route).__name__
+            methods = getattr(route, "methods", "—")
+            logger.info(f"  [{route_type}] {methods} {route.path}")
+
         
     except Exception as e:
         logger.error(f"Startup failed: {str(e)}", exc_info=True)
@@ -271,7 +276,9 @@ def process_video_task(video_id: int, config: ProcessingRequest):
             enable_speed_calculation=config.enable_speed_calculation if hasattr(config, 'enable_speed_calculation') else True,
             speed_limit=config.speed_limit if hasattr(config, 'speed_limit') else 80.0,
             video_id=video_id,  # ✅ ADD THIS LINE
-            db=db  # ✅ ADD THIS LINE
+            db=db,  # ✅ ADD THIS LINE
+            enable_plate_detection=config.enable_plate_detection if hasattr(config, 'enable_plate_detection') else False
+
         )
         
         # Update video record on success
@@ -862,17 +869,24 @@ def get_video_frame(
 
 @app.get("/api/videos/{video_id}/detections", response_model=list[VehicleDetectionResponse])
 def get_video_detections(video_id: int, db: Session = Depends(get_db)):
-    """Get all vehicle detections for a video"""
-    logger.debug(f"Get detections request: ID {video_id}")
-    
-    try:
-        detections = db.query(VehicleDetection).filter(VehicleDetection.video_id == video_id).all()
-        return [d.to_dict() for d in detections]
-        
-    except Exception as e:
-        logger.error(f"Failed to get detections for video {video_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to retrieve detections")
+    detections = db.query(VehicleDetection).filter(
+        VehicleDetection.video_id == video_id
+    ).all()
 
+    output = []
+    for d in detections:
+        item = d.to_dict()
+
+        # Build snapshot URL if a snapshot exists
+        if d.snapshot_path:
+            filename = Path(d.snapshot_path).name
+            item["snapshot_url"] = f"/snapshots/{filename}"
+        else:
+            item["snapshot_url"] = None
+
+        output.append(item)
+
+    return output
 
 @app.get("/api/videos/{video_id}/report/csv")
 def download_report(video_id: int, db: Session = Depends(get_db)):
@@ -891,19 +905,21 @@ def download_report(video_id: int, db: Session = Depends(get_db)):
         writer = csv.writer(output)
         
         # Write header
-        writer.writerow(['Vehicle ID', 'Time (s)', 'Frame', 'Speed (km/h)', 'Speed Limit (km/h)', 'Status'])
-        
+        writer.writerow(['Vehicle ID', 'Time (s)', 'Frame', 'Speed (km/h)', 'Speed Limit (km/h)', 'Status', 'Plate', 'Snapshot'])        
         # Write data
         for d in detections:
             status = "Speeding" if d.is_speeding else "Normal"
             writer.writerow([
-                d.track_id, 
-                f"{d.timestamp:.2f}", 
-                d.frame_number, 
-                f"{d.speed:.1f}", 
-                video.speed_limit, 
-                status
-            ])
+            d.track_id,
+            f"{d.timestamp:.2f}",
+            d.frame_number,
+            f"{d.speed:.1f}",
+            video.speed_limit,
+            status,
+            d.number_plate or "",
+            Path(d.snapshot_path).name if d.snapshot_path else ""
+        ])
+
             
         output.seek(0)
         
@@ -929,8 +945,8 @@ def get_system_status_endpoint():
         status = get_system_status()
         
         # Add active workers count
-        from celery.task.control import inspect
-        i = inspect(app=celery_app)
+        
+        i = Inspect(app=celery_app)
         active_tasks = i.active()
         
         if active_tasks:
@@ -949,6 +965,11 @@ def get_system_status_endpoint():
             "redis_connected": False,
             "gpu_available": False
         }
+
+from fastapi.staticfiles import StaticFiles
+
+app.mount("/snapshots", StaticFiles(directory="processed/snapshots"), name="snapshots")
+
 
 @app.get("/api/health")
 def health_check():

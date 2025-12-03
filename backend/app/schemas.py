@@ -50,6 +50,8 @@ class ProcessingRequest(BaseModel):
     iou_threshold: float = 0.5
     enable_speed_calculation: bool = True
     speed_limit: float = 80.0  # Default speed limit
+    enable_plate_detection: bool = False
+
 
 class CalibrationRequest(BaseModel):
     points: List[List[float]]
@@ -69,6 +71,12 @@ class VehicleDetectionResponse(BaseModel):
     frame_number: int
     speed: float
     is_speeding: bool
-    
+
+    snapshot_path: Optional[str] = None
+    snapshot_url: Optional[str] = None
+    number_plate: Optional[str] = None
+    number_plate_confidence: Optional[float] = None
+
     class Config:
         orm_mode = True
+

@@ -92,20 +92,21 @@ class Video(Base):
 
 
 class VehicleDetection(Base):
-    """Model to store individual vehicle detection data"""
     __tablename__ = "vehicle_detections"
     
     id = Column(Integer, primary_key=True, index=True)
     video_id = Column(Integer, ForeignKey("videos.id"), nullable=False)
     
     track_id = Column(Integer, nullable=False)
-    timestamp = Column(Float, nullable=False)  # Time in seconds from start
+    timestamp = Column(Float, nullable=False)
     frame_number = Column(Integer, nullable=False)
     speed = Column(Float, nullable=False)
     is_speeding = Column(Boolean, default=False)
-    
-    # Optional: Store bounding box or other metadata if needed later
-    # bbox = Column(JSON, nullable=True) 
+
+    # NEW FIELDS FOR SNAPSHOT + OCR
+    snapshot_path = Column(String, nullable=True)           # relative path to saved JPG
+    number_plate = Column(String, nullable=True)            # OCR cleaned text
+    number_plate_confidence = Column(Float, nullable=True)  # OCR confidence score
     
     video = relationship("Video", back_populates="detections")
     
@@ -117,5 +118,10 @@ class VehicleDetection(Base):
             "timestamp": self.timestamp,
             "frame_number": self.frame_number,
             "speed": self.speed,
-            "is_speeding": self.is_speeding
+            "is_speeding": self.is_speeding,
+
+            # RETURN NEW FIELDS TOO
+            "snapshot_path": self.snapshot_path,
+            "number_plate": self.number_plate,
+            "number_plate_confidence": self.number_plate_confidence,
         }
