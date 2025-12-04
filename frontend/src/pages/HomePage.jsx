@@ -18,7 +18,7 @@ function HomePage() {
     <div className="space-y-8">
       {/* Header */}
       <div className="text-center py-8">
-        <h1 className="text-5xl font-bold text-slate-900 mb-4">ProjectCars Dashboard</h1>
+        <h1 className="text-5xl font-bold text-slate-900 mb-4">Traff-AI Dashboard</h1>
         <p className="text-xl text-gray-600">
           Real-time vehicle detection and speed analysis with AI
         </p>

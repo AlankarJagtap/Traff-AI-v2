@@ -452,7 +452,10 @@ async def start_processing(
         
         # Route task to GPU or CPU worker via Celery
         logger.info(f"🚀 Routing video {video_id} to Celery worker...")
-        task = route_task_to_worker(video_id, config.dict())
+        task = route_task_to_worker(video_id, config.model_dump(mode="json"))
+        logger.info(f"🚀 Routing video {video_id} to Celery worker...")
+        logger.info(f"[DEBUG] Config being sent to Celery: {config.model_dump()}")
+
         
         # Save task ID to database
         video.status = "queued"

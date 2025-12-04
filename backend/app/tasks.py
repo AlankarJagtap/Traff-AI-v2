@@ -45,7 +45,7 @@ def process_video_gpu(self, video_id: int, config: Dict[str, Any]):
         device = 'cuda'
         gpu_name = torch.cuda.get_device_name(0)
         logger.info(f"[GPU Worker] Using device: {device} ({gpu_name})")
-        
+        logger.info(f"[CELERY RECEIVED CONFIG] {config}")
         # Process video
         result = _process_video_common(
             self, 
@@ -154,8 +154,10 @@ def _process_video_common(
                 task_self.db.commit()
         
         # Process video
-        logger.info(f"[{worker_type}] Starting video processing...")
-        
+        # --- Replace the existing call with this exact block ---
+        logger.info(f"[{worker_type}] Processor call config: enable_speed_calculation={config.get('enable_speed_calculation', True)}, "
+                    f"speed_limit={config.get('speed_limit', 80.0)}, enable_plate_detection={config.get('enable_plate_detection', False)}")
+
         stats = processor.process_video(
             input_path=video.original_path,
             output_path=str(output_path),
@@ -163,9 +165,12 @@ def _process_video_common(
             progress_callback=update_progress,
             enable_speed_calculation=config.get('enable_speed_calculation', True),
             speed_limit=config.get('speed_limit', 80.0),
+            enable_plate_detection=config.get('enable_plate_detection', False),   # <-- ADD THIS
             video_id=video_id,
             db=task_self.db
         )
+        # --- end replacement ---
+
         
         # Update video record on success
         video.status = "completed"

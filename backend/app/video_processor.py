@@ -38,16 +38,31 @@ def get_ocr_reader():
 
 def run_ocr(image_path):
     reader = get_ocr_reader()
-    results = reader.readtext(image_path)
-    if not results:
+    logger.info(f"[OCR] Reading image for OCR: {image_path}")
+
+    try:
+        results = reader.readtext(image_path)
+        logger.info(f"[OCR] Raw EasyOCR results: {results}")
+    except Exception as e:
+        logger.error(f"[OCR] EasyOCR readtext() error: {e}", exc_info=True)
         return None, None
 
+    if not results:
+        logger.warning("[OCR] No text detected")
+        return None, None
+
+    # Choose highest confidence result
     best = max(results, key=lambda r: r[2])
     raw_text = best[1]
     conf = float(best[2])
 
+    # Clean text
     cleaned = "".join(c for c in raw_text.upper() if c.isalnum())
-    if len(cleaned) < 4:
+
+    logger.info(f"[OCR] Cleaned text={cleaned}, confidence={conf}")
+
+    if len(cleaned) < 3:
+        logger.warning("[OCR] Detected text too short to be a plate")
         return None, conf
 
     return cleaned, conf
@@ -261,12 +276,40 @@ class VideoProcessor:
                 frame_count += 1
                 current_timestamp = frame_count / video_info.fps
                 
-                # Run detection
+                # -----------------------------
+                # YOLO vehicle-only detection
+                # -----------------------------
+
+                # Allowed COCO class IDs:
+                # 2 = car, 3 = motorcycle, 5 = bus, 7 = truck
+                ALLOWED_CLASSES = {2, 3, 5, 7}
+
+                # Run YOLO
                 result = model(frame)[0]
+
+                # Convert to Supervision detections
                 detections = sv.Detections.from_ultralytics(result)
-                
-                # Filter by confidence
+
+                # 1️⃣ Filter by confidence
                 detections = detections[detections.confidence > self.confidence_threshold]
+
+                # 2️⃣ Filter by class — **REMOVE all non-vehicle detections**
+                if len(detections) > 0:
+                    class_ids = detections.class_id
+                    vehicle_mask = np.array([cls in ALLOWED_CLASSES for cls in class_ids])
+                    detections = detections[vehicle_mask]
+
+                # 3️⃣ Apply polygon zone filter (if calibrated)
+                if polygon_zone is not None and len(detections) > 0:
+                    try:
+                        zone_mask = polygon_zone.trigger(detections)
+                        detections = detections[zone_mask]
+                    except Exception as e:
+                        logger.warning("Polygon zone filtering failed: %s", str(e))
+
+                # 4️⃣ Apply NMS
+                detections = detections.with_nms(threshold=self.iou_threshold)
+
 
                 # If we have a calibrated polygon zone (4-point), restrict detections to that area
                 if polygon_zone is not None and len(detections) > 0:
@@ -343,6 +386,7 @@ class VideoProcessor:
                                 "crop": crop,
                                 "frame_number": frame_count
                             }
+                            
 
 
                         if len(trajectory) < video_info.fps / 4:  # Need at least 0.25 seconds of data
@@ -429,12 +473,18 @@ class VideoProcessor:
 
                         # Run OCR only if enabled
                         if enable_plate_detection:
+                            logger.info(f"[OCR] Running OCR for track_id={track_id}, snapshot={snapshot_path}")
+
                             try:
                                 plate, conf = run_ocr(snapshot_path)
+                                logger.info(f"[OCR] RESULT track_id={track_id} → plate={plate}, conf={conf}")
+
                                 detection.number_plate = plate
                                 detection.number_plate_confidence = conf
+
                             except Exception as e:
-                                logger.error(f"OCR failed for track {track_id}: {e}")
+                                logger.error(f"[OCR] ERROR track_id={track_id}: {e}", exc_info=True)
+
 
                     db.add(detection)
 

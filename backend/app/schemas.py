@@ -51,6 +51,7 @@ class ProcessingRequest(BaseModel):
     enable_speed_calculation: bool = True
     speed_limit: float = 80.0  # Default speed limit
     enable_plate_detection: bool = False
+    model_config = {"extra": "allow"}
 
 
 class CalibrationRequest(BaseModel):

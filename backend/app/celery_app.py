@@ -79,6 +79,7 @@ def route_task_to_worker(video_id: int, config: dict):
     if is_gpu_available():
         logger.info(f"🚀 Routing video {video_id} to GPU worker")
         mark_gpu_busy(True)
+        logger.info(f"[ROUTER] Dispatching to {'gpu_tasks' if is_gpu_available() else 'cpu_tasks'} with config: {config}")
         return process_video_gpu.apply_async(
             args=[video_id, config],
             queue='gpu_tasks'

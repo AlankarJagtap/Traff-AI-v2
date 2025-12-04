@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: list = [".mp4", ".avi", ".mov", ".mkv", ".wmv"]
     
     # YOLO settings
-    YOLO_MODEL: str = "/app/yolo11m.pt"
+    YOLO_MODEL: str = "/app/yolo11x.pt"
     CONFIDENCE_THRESHOLD: float = 0.3
     IOU_THRESHOLD: float = 0.7
     
