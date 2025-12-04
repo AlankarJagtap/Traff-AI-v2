@@ -53,15 +53,24 @@ export const videoAPI = {
   /**
    * Upload a new video
    * @param {File} file - Video file to upload
+   * @param {Function} onProgress - Progress callback function
    * @returns {Promise} Upload response
    */
-  upload: async (file) => {
+  upload: async (file, onProgress = null) => {
     const formData = new FormData();
     formData.append('file', file);
     
     const response = await api.post('/videos/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percentCompleted = Math.round(
+            (progressEvent.loaded * 100) / progressEvent.total
+          );
+          onProgress(percentCompleted);
+        }
       },
     });
     return response.data;
@@ -94,10 +103,11 @@ export const videoAPI = {
    */
   process: async (id, config = {}) => {
     const response = await api.post(`/videos/${id}/process`, {
-      confidence_threshold: config.confidence_threshold || 0.3,
-      iou_threshold: config.iou_threshold || 0.7,
-      enable_speed_calculation: config.enable_speed_calculation || false,
-      speed_limit: config.speed_limit || 80.0,
+      confidence_threshold: config.confidence_threshold ?? 0.3,
+      iou_threshold: config.iou_threshold ?? 0.7,
+      enable_speed_calculation: config.enable_speed_calculation ?? false,
+      speed_limit: config.speed_limit ?? 80.0,
+      enable_plate_detection: config.enable_plate_detection ?? false,  // <-- REQUIRED
     });
     return response.data;
   },

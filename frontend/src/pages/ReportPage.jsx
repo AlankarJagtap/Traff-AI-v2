@@ -172,25 +172,36 @@ function ReportPage() {
       {/* Data Table */}
       <div className="bg-white shadow overflow-hidden sm:rounded-lg">
         <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Vehicle ID
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Time
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Frame
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Speed
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
-              </th>
-            </tr>
-          </thead>
+            <thead className="bg-gray-50">
+              <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Vehicle ID
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Time
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Frame
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Speed
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Status
+                </th>
+
+                {/* NEW: Snapshot */}
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Snapshot
+                </th>
+
+                {/* NEW: Number Plate */}
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Number Plate
+                </th>
+              </tr>
+            </thead>
+
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredDetections.map((detection) => (
               <tr key={detection.track_id} className={detection.is_speeding ? 'bg-red-50' : ''}>
@@ -215,6 +226,37 @@ function ReportPage() {
                     {detection.is_speeding ? 'Speeding' : 'Normal'}
                   </span>
                 </td>
+                {/* Snapshot */}
+                <td className="px-6 py-4 whitespace-nowrap">
+                  {detection.snapshot_url ? (
+                    <a href={detection.snapshot_url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={detection.snapshot_url}
+                        alt="snapshot"
+                        className="h-20 w-auto rounded border shadow-sm"
+                      />
+                    </a>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
+                {/* Number Plate */}
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {detection.number_plate ? (
+                    <div>
+                      <span className="font-semibold">{detection.number_plate}</span>
+                      {detection.number_plate_confidence && (
+                        <div className="text-xs text-gray-500">
+                          {Math.round(detection.number_plate_confidence * 100)}% confidence
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
+
+
               </tr>
             ))}
           </tbody>
